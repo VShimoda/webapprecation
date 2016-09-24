@@ -30,6 +30,7 @@ func main() {
 	http.Handle("/", &templateHandler{
 		filename: "chat.html",
 	})
+	http.Handle("/chat", MustAuth(&templateHandler{filename: "chat.html"}))
 	http.Handle("/room", r)
 	// start room
 	go r.run()

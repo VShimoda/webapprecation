@@ -4,26 +4,37 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/stretchr/objx"
+
 	"github.com/VShimoda/webapprecation/trace"
 	"github.com/gorilla/websocket"
 )
 
 type room struct {
-	// forward retain message
-	forward chan []byte
-	// join is a channel for client who wants to login
+
+	// forward is a channel that holds incoming messages
+	// that should be forwarded to the other clients.
+	forward chan *message
+
+	// join is a channel for clients wishing to join the room.
 	join chan *client
-	// leave is a channel for leave this room
+
+	// leave is a channel for clients wishing to leave the room.
 	leave chan *client
-	// clients is in this room
+
+	// clients holds all current clients in this room.
 	clients map[*client]bool
-	// tracer is logging this chat room
+
+	// tracer will receive trace information of activity
+	// in the room.
 	tracer trace.Tracer
 }
 
+// newRoom makes a new room that is ready to
+// go.
 func newRoom() *room {
 	return &room{
-		forward: make(chan []byte),
+		forward: make(chan *message),
 		join:    make(chan *client),
 		leave:   make(chan *client),
 		clients: make(map[*client]bool),
@@ -35,27 +46,20 @@ func (r *room) run() {
 	for {
 		select {
 		case client := <-r.join:
-			// join
+			// joining
 			r.clients[client] = true
-			r.tracer.Trace("new client joined")
+			r.tracer.Trace("New client joined")
 		case client := <-r.leave:
-			// leave
+			// leaving
 			delete(r.clients, client)
 			close(client.send)
-			r.tracer.Trace("client left")
+			r.tracer.Trace("Client left")
 		case msg := <-r.forward:
-			r.tracer.Trace(" -- sent to client")
-			// send all clients
+			r.tracer.Trace("Message received: ", string(msg.Message))
+			// forward message to all clients
 			for client := range r.clients {
-				select {
-				case client.send <- msg:
-				// send message
-				default:
-					// fail to send
-					delete(r.clients, client)
-					close(client.send)
-					r.tracer.Trace(" -- faled to send message. clean up clients")
-				}
+				client.send <- msg
+				r.tracer.Trace(" -- sent to client")
 			}
 		}
 	}
@@ -66,10 +70,7 @@ const (
 	messageBufferSize = 256
 )
 
-var upgrader = &websocket.Upgrader{
-	ReadBufferSize:  socketBufferSize,
-	WriteBufferSize: socketBufferSize,
-}
+var upgrader = &websocket.Upgrader{ReadBufferSize: socketBufferSize, WriteBufferSize: socketBufferSize}
 
 func (r *room) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	socket, err := upgrader.Upgrade(w, req, nil)
@@ -77,15 +78,20 @@ func (r *room) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		log.Fatal("ServeHTTP:", err)
 		return
 	}
+
+	authCookie, err := req.Cookie("auth")
+	if err != nil {
+		log.Fatal("Failed to get auth cookie:", err)
+		return
+	}
 	client := &client{
-		socket: socket,
-		send:   make(chan []byte, messageBufferSize),
-		room:   r,
+		socket:   socket,
+		send:     make(chan *message, messageBufferSize),
+		room:     r,
+		userData: objx.MustFromBase64(authCookie.Value),
 	}
 	r.join <- client
-	defer func() {
-		r.leave <- client
-	}()
+	defer func() { r.leave <- client }()
 	go client.write()
 	client.read()
 }

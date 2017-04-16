@@ -5,9 +5,11 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sync"
 
+	"github.com/VShimoda/webapprecation/trace"
 	"github.com/stretchr/gomniauth"
 	"github.com/stretchr/gomniauth/providers/facebook"
 	"github.com/stretchr/gomniauth/providers/github"
@@ -62,6 +64,7 @@ func main() {
 	)
 
 	r := newRoom()
+	r.tracer = trace.New(os.Stdout)
 	// room
 	//http.Handle("/", &templateHandler{
 	//	filename: "chat.html",

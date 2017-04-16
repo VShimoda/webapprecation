@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 
@@ -23,10 +22,11 @@ func (h *authHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		// error have happend
-		panic(err.Error())
+		// some other error
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
-	// Succeeded. Wrap Handler
+	// success - call the next handler
 	h.next.ServeHTTP(w, r)
 }
 
@@ -36,47 +36,62 @@ func MustAuth(handler http.Handler) http.Handler {
 }
 
 // loginHandler handles the third-party login process.
-// Path: /auth/{action}/{provider}
 func loginHandler(w http.ResponseWriter, r *http.Request) {
 	segs := strings.Split(r.URL.Path, "/")
 	action := segs[2]
 	provider := segs[3]
 	switch action {
 	case "login":
+
 		provider, err := gomniauth.Provider(provider)
 		if err != nil {
-			log.Fatalln("Failed to get auth provider")
-		}
-		loginURL, err := provider.GetBeginAuthURL(nil, nil)
-		if err != nil {
-			log.Fatalln("Failed to call GetBeginAuthURL:", provider, "-", err)
-		}
-		w.Header().Set("Location", loginURL)
-		w.WriteHeader(http.StatusTemporaryRedirect)
-	case "callback":
-		provider, err := gomniauth.Provider(provider)
-		if err != nil {
-			log.Fatalln("Failed to get auth provider callback:", provider, "-", err)
-		}
-		creds, err := provider.CompleteAuth(objx.MustFromURLQuery(r.URL.RawQuery))
-		if err != nil {
-			log.Fatalln("failed to complete authentication:", provider, "-", err)
+			http.Error(w, fmt.Sprintf("Error when trying to get provider %s: %s", provider, err), http.StatusBadRequest)
+			return
 		}
 
+		loginURL, err := provider.GetBeginAuthURL(nil, nil)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Error when trying to GetBeginAuthURL for %s: %s", provider, err), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Location", loginURL)
+		w.WriteHeader(http.StatusTemporaryRedirect)
+
+	case "callback":
+
+		provider, err := gomniauth.Provider(provider)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Error when trying to get provider %s: %s", provider, err), http.StatusBadRequest)
+			return
+		}
+
+		// get the credentials
+		creds, err := provider.CompleteAuth(objx.MustFromURLQuery(r.URL.RawQuery))
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Error when trying to complete auth for %s: %s", provider, err), http.StatusInternalServerError)
+			return
+		}
+
+		// get the user
 		user, err := provider.GetUser(creds)
 		if err != nil {
-			log.Fatalln("failed to get user:", provider, "-", err)
+			http.Error(w, fmt.Sprintf("Error when trying to get user from %s: %s", provider, err), http.StatusInternalServerError)
+			return
 		}
+
+		// save some data
 		authCookieValue := objx.New(map[string]interface{}{
 			"name": user.Name(),
 		}).MustBase64()
 		http.SetCookie(w, &http.Cookie{
-			Name: "auth",
+			Name:  "auth",
 			Value: authCookieValue,
-			Path: "/",
-		})
-		w.Header()["Location"] = []string{"/chat"}
+			Path:  "/"})
+
+		w.Header().Set("Location", "/chat")
 		w.WriteHeader(http.StatusTemporaryRedirect)
+
 	default:
 		w.WriteHeader(http.StatusNotFound)
 		fmt.Fprintf(w, "Auth action %s not supported", action)
